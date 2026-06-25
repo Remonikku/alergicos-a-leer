@@ -7,8 +7,7 @@ const pool = mysql.createPool({
     database: 'Libreria',
     port: 3306,
     waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+    charset: 'utf8mb4'
 });
 
 module.exports = pool;

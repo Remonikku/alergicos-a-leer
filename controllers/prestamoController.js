@@ -2,6 +2,13 @@ const db = require('../config/db');
 
 const listarPrestamos = async (req, res) => {
     try {
+        // Actualizar automáticamente a atrasado si la fecha de devolución ya pasó y sigue activo
+        await db.query(`
+            UPDATE prestamos 
+            SET estado = 'ATRASADO' 
+            WHERE estado = 'ACTIVO' AND fecha_devolucion < CURDATE()
+        `);
+
         const sql = `
             SELECT 
                 p.id_prestamo,
@@ -52,7 +59,7 @@ const obtenerPrestamo = async (req, res) => {
 const pedirPrestamo = async (req, res) => {
     let connection;
     try {
-        const { nombre_cliente, fk_id_libro } = req.body;
+        const { nombre_cliente, fk_id_libro, fecha_prestamo, fecha_devolucion } = req.body;
         if (!nombre_cliente || nombre_cliente.trim() === '' || !fk_id_libro) {
             return res.status(400).json({ mensaje: 'El nombre del cliente y el libro son obligatorios' });
         }
@@ -60,7 +67,7 @@ const pedirPrestamo = async (req, res) => {
         connection = await db.getConnection();
         await connection.beginTransaction();
         
-        const [resultadosLibro] = await connection.query('SELECT stock, titulo FROM libros WHERE id_libro = ?', [fk_id_libro]);
+        const [resultadosLibro] = await connection.query('SELECT stock, titulo, isbn FROM libros WHERE id_libro = ?', [fk_id_libro]);
         if (resultadosLibro.length === 0) {
             await connection.rollback();
             return res.status(404).json({ mensaje: 'El libro seleccionado no existe' });
@@ -72,14 +79,40 @@ const pedirPrestamo = async (req, res) => {
             return res.status(400).json({ mensaje: `No queda stock disponible para el libro: "${libro.titulo}"` });
         }
         
-        const fechaActual = new Date().toISOString().slice(0, 10);
-        const sqlPrestamo = 'INSERT INTO prestamos (nombre_cliente, fk_id_libro, fecha_prestamo, fecha_devolucion, estado) VALUES (?, ?, ?, NULL, "ACTIVO")';
-        await connection.query(sqlPrestamo, [nombre_cliente.trim(), fk_id_libro, fechaActual]);
+        const fechaActual = fecha_prestamo || new Date().toISOString().slice(0, 10);
+        let fechaDev = fecha_devolucion;
+        if (!fechaDev || fechaDev.trim() === '') {
+            const dateObj = new Date(fechaActual);
+            dateObj.setDate(dateObj.getDate() + 7); // 7 días de intervalo por defecto
+            fechaDev = dateObj.toISOString().slice(0, 10);
+        }
+        
+        // Verificar si la fecha de devolución está en el pasado (atrasado)
+        const hoy = new Date().toISOString().slice(0, 10);
+        let estadoInicial = "ACTIVO";
+        if (fechaDev < hoy) {
+            estadoInicial = "ATRASADO";
+        }
+        
+        const sqlPrestamo = 'INSERT INTO prestamos (nombre_cliente, fk_id_libro, fecha_prestamo, fecha_devolucion, estado) VALUES (?, ?, ?, ?, ?)';
+        const [resultado] = await connection.query(sqlPrestamo, [nombre_cliente.trim(), fk_id_libro, fechaActual, fechaDev, estadoInicial]);
         
         await connection.query('UPDATE libros SET stock = stock - 1 WHERE id_libro = ?', [fk_id_libro]);
         
         await connection.commit();
-        return res.status(201).json({ mensaje: 'Préstamo solicitado correctamente' });
+        return res.status(201).json({ 
+            mensaje: 'Préstamo solicitado correctamente',
+            prestamo: {
+                id_prestamo: resultado.insertId,
+                nombre_cliente: nombre_cliente.trim(),
+                fk_id_libro: Number(fk_id_libro),
+                titulo_libro: libro.titulo,
+                isbn_libro: libro.isbn,
+                fecha_prestamo: fechaActual,
+                fecha_devolucion: fechaDev,
+                estado: estadoInicial
+            }
+        });
     } catch (error) {
         if (connection) await connection.rollback();
         console.error('Error al solicitar préstamo:', error);
@@ -108,8 +141,8 @@ const devolverPrestamo = async (req, res) => {
             return res.status(400).json({ mensaje: 'Este préstamo ya fue devuelto' });
         }
         
-        const fechaActual = new Date().toISOString().slice(0, 10);
-        await connection.query('UPDATE prestamos SET estado = "DEVUELTO", fecha_devolucion = ? WHERE id_prestamo = ?', [fechaActual, id]);
+        // Mantener la fecha de devolución límite y solo cambiar estado a DEVUELTO
+        await connection.query('UPDATE prestamos SET estado = "DEVUELTO" WHERE id_prestamo = ?', [id]);
         
         await connection.query('UPDATE libros SET stock = stock + 1 WHERE id_libro = ?', [prestamo.fk_id_libro]);
         
@@ -130,8 +163,8 @@ const editarPrestamo = async (req, res) => {
         const { id } = req.params;
         const { nombre_cliente, fk_id_libro, fecha_prestamo, fecha_devolucion, estado } = req.body;
         
-        if (!nombre_cliente || nombre_cliente.trim() === '' || !fk_id_libro || !fecha_prestamo || !estado) {
-            return res.status(400).json({ mensaje: 'Todos los campos excepto la fecha de devolución son obligatorios' });
+        if (!nombre_cliente || nombre_cliente.trim() === '' || !fk_id_libro || !fecha_prestamo || !fecha_devolucion || !estado) {
+            return res.status(400).json({ mensaje: 'Todos los campos son obligatorios' });
         }
         
         connection = await db.getConnection();
@@ -147,7 +180,13 @@ const editarPrestamo = async (req, res) => {
         const oldBook = original.fk_id_libro;
         const oldState = original.estado;
         const newBook = Number(fk_id_libro);
-        const newState = estado;
+        
+        let newState = estado;
+        // Si el estado es activo pero la fecha de vencimiento ya pasó, forzar a atrasado
+        const hoy = new Date().toISOString().slice(0, 10);
+        if (newState === 'ACTIVO' && fecha_devolucion < hoy) {
+            newState = 'ATRASADO';
+        }
         
         if (oldState !== 'DEVUELTO') {
             await connection.query('UPDATE libros SET stock = stock + 1 WHERE id_libro = ?', [oldBook]);
@@ -177,7 +216,7 @@ const editarPrestamo = async (req, res) => {
             nombre_cliente.trim(),
             newBook,
             fecha_prestamo,
-            fecha_devolucion && fecha_devolucion.trim() !== '' ? fecha_devolucion : null,
+            fecha_devolucion,
             newState,
             id
         ]);

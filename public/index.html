@@ -82,7 +82,27 @@
         </tr>
     </template>
 
+    <!-- Modal de Voucher -->
+    <div class="modal fade" id="modalVoucher" tabindex="-1" aria-labelledby="modalVoucherLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-white border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title fw-bold" id="modalVoucherLabel">🎫 Tu Voucher de Préstamo</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="contenidoVoucher">
+                    <!-- Se llenará dinámicamente -->
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-outline-light rounded-pill btn-sm px-3" data-bs-dismiss="modal">Cerrar</button>
+                    <button type="button" id="btnDescargarPDF" class="btn btn-success rounded-pill btn-sm px-3">Descargar PDF</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="/js/public.js"></script>
 </body>
 </html>
