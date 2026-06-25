@@ -31,10 +31,16 @@ const agregarGenero = async (req, res) => {
             return res.status(400).json({ mensaje: 'El nombre del género es obligatorio' });
         }
         
+        const trimmed = nombre_genero.trim();
+        const nombreCapitalizado = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+        
         const sql = 'INSERT INTO generos (nombre_genero) VALUES (?)';
-        const [resultado] = await db.query(sql, [nombre_genero.trim()]);
+        const [resultado] = await db.query(sql, [nombreCapitalizado]);
         return res.status(201).json({ mensaje: 'Género agregado correctamente', id: resultado.insertId });
     } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
+            return res.status(400).json({ mensaje: 'El género ya existe' });
+        }
         console.error('Error al agregar género:', error);
         return res.status(500).json({ mensaje: 'Error al agregar el género' });
     }
@@ -48,14 +54,20 @@ const editarGenero = async (req, res) => {
             return res.status(400).json({ mensaje: 'El nombre del género es obligatorio' });
         }
         
+        const trimmed = nombre_genero.trim();
+        const nombreCapitalizado = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+        
         const sql = 'UPDATE generos SET nombre_genero = ? WHERE id_genero = ?';
-        const [resultado] = await db.query(sql, [nombre_genero.trim(), id]);
+        const [resultado] = await db.query(sql, [nombreCapitalizado, id]);
         
         if (resultado.affectedRows === 0) {
             return res.status(404).json({ mensaje: 'Género no encontrado' });
         }
         return res.status(200).json({ mensaje: 'Género editado correctamente' });
     } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
+            return res.status(400).json({ mensaje: 'El género ya existe' });
+        }
         console.error('Error al editar género:', error);
         return res.status(500).json({ mensaje: 'Error al editar el género' });
     }

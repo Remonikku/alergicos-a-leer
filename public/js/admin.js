@@ -14,6 +14,9 @@ let listaAutores = [];
 let listaGeneros = [];
 let listaPrestamos = [];
 let listaUsuarios = [];
+let autoresSeleccionados = [];
+let voucherData = null;
+let modalVoucherEl = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     await validarSesion();
@@ -24,6 +27,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         obtenerPrestamos(),
         obtenerUsuarios()
     ]);
+    inicializarAutocompletarAutores();
+    inicializarValidadorISBN();
+    inicializarFechaDevolucion();
+    inicializarVoucher();
 });
 
 async function validarSesion() {
@@ -301,29 +308,46 @@ function actualizarCombosGeneros() {
 }
 
 function actualizarChecklistAutores() {
+    renderAutoresBadges();
+}
+
+function renderAutoresBadges() {
     containerLibroAutores.innerHTML = '';
-    if (listaAutores.length === 0) {
-        containerLibroAutores.innerHTML = '<span class="text-secondary small italic">No hay autores registrados. Créalos primero.</span>';
+    if (autoresSeleccionados.length === 0) {
+        containerLibroAutores.innerHTML = '<span class="text-secondary small italic">Ningún autor seleccionado. Utilice el buscador superior.</span>';
         return;
     }
-    listaAutores.forEach(aut => {
-        const div = document.createElement('div');
-        div.className = 'form-check form-check-inline m-1';
-        div.innerHTML = `
-            <input class="form-check-input check-autor" type="checkbox" value="${aut.id_autor}" id="chk_aut_${aut.id_autor}">
-            <label class="form-check-label small font-monospace" for="chk_aut_${aut.id_autor}">
-                ${aut.nombre} ${aut.apellido}
-            </label>
+    autoresSeleccionados.forEach(id => {
+        const aut = listaAutores.find(a => a.id_autor === id);
+        if (!aut) return;
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-primary d-flex align-items-center gap-2 p-2 rounded-pill font-monospace';
+        badge.innerHTML = `
+            ${aut.nombre} ${aut.apellido}
+            <button type="button" class="btn-close btn-close-white btn-sm" style="font-size: 0.6rem;" onclick="eliminarAutorSeleccionado(${id})"></button>
         `;
-        containerLibroAutores.appendChild(div);
+        containerLibroAutores.appendChild(badge);
     });
 }
+
+window.eliminarAutorSeleccionado = function(id) {
+    autoresSeleccionados = autoresSeleccionados.filter(item => item !== id);
+    renderAutoresBadges();
+};
 
 formLibro.addEventListener('submit', async (e) => {
     e.preventDefault();
     
-    const checkboxes = containerLibroAutores.querySelectorAll('.check-autor:checked');
-    const idsAutoresArr = Array.from(checkboxes).map(chk => Number(chk.value));
+    if (inputLibroIsbn.classList.contains('is-invalid')) {
+        mostrarMensaje('Por favor, ingrese un ISBN válido antes de guardar.', 'error');
+        return;
+    }
+
+    const idsAutoresArr = autoresSeleccionados;
+    if (idsAutoresArr.length === 0) {
+        mostrarMensaje('Debe seleccionar al menos un autor para el libro', 'error');
+        return;
+    }
 
     const datos = {
         titulo: inputLibroTitulo.value.trim(),
@@ -370,14 +394,8 @@ async function cargarLibroEnFormulario(id) {
         inputLibroStock.value = libro.stock;
         selectLibroGenero.value = libro.fk_id_genero;
 
-        containerLibroAutores.querySelectorAll('.check-autor').forEach(chk => chk.checked = false);
-
-        if (libro.ids_autores) {
-            libro.ids_autores.forEach(idAutor => {
-                const chk = document.getElementById(`chk_aut_${idAutor}`);
-                if (chk) chk.checked = true;
-            });
-        }
+        autoresSeleccionados = libro.ids_autores || [];
+        renderAutoresBadges();
 
         tituloFormLibro.textContent = 'Editar Libro';
         inputLibroTitulo.focus();
@@ -390,7 +408,9 @@ function limpiarFormLibro() {
     formLibro.reset();
     inputIdLibro.value = '';
     tituloFormLibro.textContent = 'Agregar Libro';
-    containerLibroAutores.querySelectorAll('.check-autor').forEach(chk => chk.checked = false);
+    autoresSeleccionados = [];
+    renderAutoresBadges();
+    inputLibroIsbn.classList.remove('is-valid', 'is-invalid');
 }
 
 async function eliminarLibro(id) {
@@ -433,23 +453,57 @@ function renderPrestamos() {
     cuerpoTablaPrestamos.innerHTML = '';
     listaPrestamos.forEach(p => {
         const fila = templatePrestamo.content.cloneNode(true);
+        const tr = fila.querySelector('tr');
         fila.querySelector('.col-id').textContent = p.id_prestamo;
         fila.querySelector('.col-cliente').textContent = p.nombre_cliente;
         fila.querySelector('.col-libro').textContent = p.titulo_libro || `ID Libro: ${p.fk_id_libro}`;
         fila.querySelector('.col-fecha-p').textContent = p.fecha_prestamo;
-        fila.querySelector('.col-fecha-d').textContent = p.fecha_devolucion || '-';
+        fila.querySelector('.col-fecha-d').textContent = p.fecha_devolucion;
         
         const colEstado = fila.querySelector('.col-estado');
         let badgeClass = 'bg-success';
-        if (p.estado === 'DEVUELTO') badgeClass = 'bg-secondary';
-        else if (p.estado === 'ATRASADO') badgeClass = 'bg-danger';
-        colEstado.innerHTML = `<span class="badge ${badgeClass} font-monospace small">${p.estado}</span>`;
+        if (p.estado === 'DEVUELTO') {
+            badgeClass = 'bg-secondary';
+            colEstado.innerHTML = `<span class="badge ${badgeClass} font-monospace small">${p.estado}</span>`;
+        } else if (p.estado === 'ATRASADO') {
+            badgeClass = 'bg-danger';
+            
+            // Calcular multa ($500 por cada día de atraso)
+            const hoyDate = new Date();
+            hoyDate.setHours(0,0,0,0);
+            const devDate = new Date(p.fecha_devolucion + 'T00:00:00');
+            const diffTime = hoyDate - devDate;
+            const diffDays = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+            const multa = diffDays * 500;
+            
+            colEstado.innerHTML = `
+                <span class="badge ${badgeClass} font-monospace small">${p.estado}</span>
+                <div class="text-danger small fw-bold mt-1" style="font-size: 0.75rem;">⚠️ Multa: $${multa}<br>(${diffDays} días de retraso)</div>
+            `;
+            
+            // Resaltar fila con borde rojo
+            tr.style.outline = '2px solid #ff4d4d';
+            tr.style.outlineOffset = '-2px';
+        } else {
+            colEstado.innerHTML = `<span class="badge ${badgeClass} font-monospace small">${p.estado}</span>`;
+        }
 
         const btnDevolver = fila.querySelector('.btn-devolver');
         if (p.estado === 'ACTIVO' || p.estado === 'ATRASADO') {
             btnDevolver.classList.remove('d-none');
             btnDevolver.addEventListener('click', () => registrarDevolucion(p.id_prestamo));
         }
+        
+        fila.querySelector('.btn-voucher').addEventListener('click', () => {
+            mostrarVoucher({
+                id_prestamo: p.id_prestamo,
+                nombre_cliente: p.nombre_cliente,
+                titulo_libro: p.titulo_libro,
+                isbn_libro: p.isbn_libro,
+                fecha_prestamo: p.fecha_prestamo,
+                fecha_devolucion: p.fecha_devolucion
+            });
+        });
 
         fila.querySelector('.btn-editar').addEventListener('click', () => cargarPrestamoEnFormulario(p));
         fila.querySelector('.btn-eliminar').addEventListener('click', () => eliminarPrestamo(p.id_prestamo));
@@ -469,11 +523,14 @@ function actualizarComboLibrosPrestamo() {
 
 formPrestamo.addEventListener('submit', async (e) => {
     e.preventDefault();
+    
+    calcularFechaDevolucion(); // Garantizar cálculo
+    
     const datos = {
         nombre_cliente: inputPrestamoCliente.value.trim(),
         fk_id_libro: Number(selectPrestamoLibro.value),
         fecha_prestamo: inputPrestamoFechaP.value,
-        fecha_devolucion: inputPrestamoFechaD.value ? inputPrestamoFechaD.value : null,
+        fecha_devolucion: inputPrestamoFechaD.value,
         estado: selectPrestamoEstado.value
     };
 
@@ -494,6 +551,10 @@ formPrestamo.addEventListener('submit', async (e) => {
         limpiarFormPrestamo();
         await obtenerPrestamos();
         await obtenerLibros();
+        
+        if (metodo === 'POST' && respDatos.prestamo) {
+            mostrarVoucher(respDatos.prestamo);
+        }
     } catch (err) {
         mostrarMensaje(err.message, 'error');
     }
@@ -507,7 +568,25 @@ function cargarPrestamoEnFormulario(p) {
     selectPrestamoLibro.value = p.fk_id_libro;
     selectPrestamoEstado.value = p.estado;
     inputPrestamoFechaP.value = p.fecha_prestamo;
-    inputPrestamoFechaD.value = p.fecha_devolucion || '';
+    
+    const selectIntervalo = document.getElementById('prestamo_intervalo');
+    const inputDiasC = document.getElementById('prestamo_dias_c');
+    const grupoDiasPersonalizados = document.getElementById('grupo_dias_personalizados');
+    
+    const diffTime = Math.abs(new Date(p.fecha_devolucion + 'T00:00:00') - new Date(p.fecha_prestamo + 'T00:00:00'));
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 7 || diffDays === 14 || diffDays === 30) {
+        selectIntervalo.value = String(diffDays);
+        grupoDiasPersonalizados.style.display = 'none';
+        inputDiasC.required = false;
+    } else {
+        selectIntervalo.value = 'custom';
+        inputDiasC.value = diffDays;
+        grupoDiasPersonalizados.style.display = 'block';
+        inputDiasC.required = true;
+    }
+    inputPrestamoFechaD.value = p.fecha_devolucion;
     
     tituloFormPrestamo.textContent = 'Editar Registro Préstamo';
     inputPrestamoCliente.focus();
@@ -516,7 +595,14 @@ function cargarPrestamoEnFormulario(p) {
 function limpiarFormPrestamo() {
     formPrestamo.reset();
     inputIdPrestamo.value = '';
+    document.getElementById('prestamo_intervalo').value = '7';
+    document.getElementById('grupo_dias_personalizados').style.display = 'none';
+    document.getElementById('prestamo_dias_c').required = false;
     tituloFormPrestamo.textContent = 'Registrar Préstamo Manual';
+    
+    const hoy = new Date().toISOString().slice(0, 10);
+    document.getElementById('prestamo_fecha_p').value = hoy;
+    calcularFechaDevolucion();
 }
 
 async function registrarDevolucion(id) {
@@ -642,4 +728,280 @@ async function eliminarUsuario(id) {
     } catch (err) {
         mostrarMensaje(err.message, 'error');
     }
+}
+
+// ==========================================
+// Nuevas funciones de validación e inicialización
+// ==========================================
+
+function inicializarAutocompletarAutores() {
+    const inputAutoresBusqueda = document.getElementById('libro_autores_input');
+    const dropdownAutores = document.getElementById('autores_dropdown');
+    
+    function mostrarTodosLosAutores() {
+        dropdownAutores.innerHTML = '';
+        const filtro = inputAutoresBusqueda.value.toLowerCase().trim();
+        const autoresFiltrados = listaAutores.filter(aut => {
+            const nombreCompleto = `${aut.nombre} ${aut.apellido}`.toLowerCase();
+            return nombreCompleto.includes(filtro);
+        });
+        
+        if (autoresFiltrados.length === 0) {
+            dropdownAutores.innerHTML = '<div class="dropdown-item text-secondary disabled py-2">No se encontraron autores</div>';
+            dropdownAutores.style.display = 'block';
+            return;
+        }
+        
+        autoresFiltrados.forEach(aut => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'dropdown-item text-white py-2 border-bottom border-secondary border-opacity-25';
+            
+            const yaSeleccionado = autoresSeleccionados.includes(aut.id_autor);
+            item.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center font-monospace small">
+                    <span>${aut.nombre} ${aut.apellido}</span>
+                    ${yaSeleccionado ? '<span class="badge bg-success rounded-pill font-monospace" style="font-size: 0.6rem;">Seleccionado</span>' : ''}
+                </div>
+            `;
+            
+            item.addEventListener('click', () => {
+                if (!yaSeleccionado) {
+                    autoresSeleccionados.push(aut.id_autor);
+                    renderAutoresBadges();
+                }
+                inputAutoresBusqueda.value = '';
+                dropdownAutores.style.display = 'none';
+            });
+            dropdownAutores.appendChild(item);
+        });
+        
+        dropdownAutores.style.display = 'block';
+    }
+    
+    inputAutoresBusqueda.addEventListener('click', mostrarTodosLosAutores);
+    inputAutoresBusqueda.addEventListener('input', mostrarTodosLosAutores);
+    
+    document.addEventListener('click', (e) => {
+        if (e.target !== inputAutoresBusqueda && e.target !== dropdownAutores && !dropdownAutores.contains(e.target)) {
+            dropdownAutores.style.display = 'none';
+        }
+    });
+}
+
+function validarISBN(isbn) {
+    const clean = isbn.replace(/[- ]/g, "");
+    if (clean.length === 10) {
+        let sum = 0;
+        for (let i = 0; i < 9; i++) {
+            const digit = parseInt(clean[i]);
+            if (isNaN(digit)) return false;
+            sum += digit * (10 - i);
+        }
+        let last = clean[9].toUpperCase();
+        let lastVal = 0;
+        if (last === 'X') {
+            lastVal = 10;
+        } else {
+            lastVal = parseInt(last);
+            if (isNaN(lastVal)) return false;
+        }
+        sum += lastVal;
+        return sum % 11 === 0;
+    } else if (clean.length === 13) {
+        let sum = 0;
+        for (let i = 0; i < 12; i++) {
+            const digit = parseInt(clean[i]);
+            if (isNaN(digit)) return false;
+            sum += digit * (i % 2 === 0 ? 1 : 3);
+        }
+        const check = parseInt(clean[12]);
+        if (isNaN(check)) return false;
+        const calcCheck = (10 - (sum % 10)) % 10;
+        return calcCheck === check;
+    }
+    return false;
+}
+
+function inicializarValidadorISBN() {
+    inputLibroIsbn.addEventListener('input', () => {
+        const val = inputLibroIsbn.value.trim();
+        if (val === '') {
+            inputLibroIsbn.classList.remove('is-valid', 'is-invalid');
+            return;
+        }
+        if (validarISBN(val)) {
+            inputLibroIsbn.classList.add('is-valid');
+            inputLibroIsbn.classList.remove('is-invalid');
+        } else {
+            inputLibroIsbn.classList.add('is-invalid');
+            inputLibroIsbn.classList.remove('is-valid');
+        }
+    });
+}
+
+function calcularFechaDevolucion() {
+    const fechaP = inputPrestamoFechaP.value;
+    if (!fechaP) return;
+    
+    const selectIntervalo = document.getElementById('prestamo_intervalo');
+    const inputDiasC = document.getElementById('prestamo_dias_c');
+    let dias = 7;
+    if (selectIntervalo.value === 'custom') {
+        dias = parseInt(inputDiasC.value) || 0;
+    } else {
+        dias = parseInt(selectIntervalo.value) || 7;
+    }
+    
+    const date = new Date(fechaP + 'T00:00:00');
+    date.setDate(date.getDate() + dias);
+    
+    const anio = date.getFullYear();
+    const mes = String(date.getMonth() + 1).padStart(2, '0');
+    const dia = String(date.getDate()).padStart(2, '0');
+    
+    inputPrestamoFechaD.value = `${anio}-${mes}-${dia}`;
+}
+
+function inicializarFechaDevolucion() {
+    const selectIntervalo = document.getElementById('prestamo_intervalo');
+    const inputDiasC = document.getElementById('prestamo_dias_c');
+    const grupoDiasPersonalizados = document.getElementById('grupo_dias_personalizados');
+    
+    selectIntervalo.addEventListener('change', () => {
+        if (selectIntervalo.value === 'custom') {
+            grupoDiasPersonalizados.style.display = 'block';
+            inputDiasC.required = true;
+        } else {
+            grupoDiasPersonalizados.style.display = 'none';
+            inputDiasC.required = false;
+        }
+        calcularFechaDevolucion();
+    });
+    
+    inputDiasC.addEventListener('input', calcularFechaDevolucion);
+    inputPrestamoFechaP.addEventListener('change', calcularFechaDevolucion);
+    
+    const hoy = new Date().toISOString().slice(0, 10);
+    inputPrestamoFechaP.value = hoy;
+    calcularFechaDevolucion();
+}
+
+function mostrarVoucher(prestamo) {
+    voucherData = prestamo;
+    document.getElementById('contenidoVoucher').innerHTML = `
+        <div class="p-3 border border-secondary rounded bg-black text-start font-monospace">
+            <h6 class="text-center fw-bold text-success mb-3">🎫 VOUCHER DE PRÉSTAMO</h6>
+            <p class="mb-1"><strong>Folio Préstamo:</strong> #${prestamo.id_prestamo}</p>
+            <p class="mb-1"><strong>Cliente:</strong> ${prestamo.nombre_cliente}</p>
+            <p class="mb-1"><strong>Libro:</strong> ${prestamo.titulo_libro}</p>
+            <p class="mb-1"><strong>ISBN:</strong> ${prestamo.isbn_libro || '-'}</p>
+            <p class="mb-1"><strong>F. Préstamo:</strong> ${prestamo.fecha_prestamo}</p>
+            <p class="mb-1"><strong>F. Devolución Obligatoria:</strong> <span class="text-warning fw-bold">${prestamo.fecha_devolucion}</span></p>
+            <hr class="border-secondary my-2">
+            <p class="small text-center text-secondary mb-0">Por favor, devuelva el libro a tiempo para evitar multas de $500 por día de atraso.</p>
+        </div>
+    `;
+    modalVoucherEl.show();
+}
+
+function inicializarVoucher() {
+    modalVoucherEl = new bootstrap.Modal(document.getElementById('modalVoucher'));
+    
+    document.getElementById('btnDescargarPDF').addEventListener('click', () => {
+        if (!voucherData) return;
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({
+            orientation: 'portrait',
+            unit: 'mm',
+            format: [80, 140]
+        });
+        
+        // Dibujar un bloque de encabezado azul/gris oscuro premium
+        doc.setFillColor(33, 37, 41);
+        doc.rect(0, 0, 80, 25, "F");
+        
+        // Título del encabezado
+        doc.setTextColor(255, 255, 255);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(14);
+        doc.text("ALÉRGICOS A LEER", 40, 10, { align: "center" });
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8.5);
+        doc.text("VOUCHER DE PRÉSTAMO OFICIAL", 40, 16, { align: "center" });
+        
+        // Resetear color de texto
+        doc.setTextColor(33, 37, 41);
+        
+        let y = 35;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.text(`Folio Préstamo: #${voucherData.id_prestamo}`, 10, y);
+        
+        // Línea divisoria
+        y += 3;
+        doc.setDrawColor(200, 200, 200);
+        doc.line(10, y, 70, y);
+        
+        y += 8;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.text("CLIENTE:", 10, y);
+        doc.setFont("helvetica", "normal");
+        doc.text(voucherData.nombre_cliente, 30, y);
+        
+        y += 6;
+        doc.setFont("helvetica", "bold");
+        doc.text("LIBRO:", 10, y);
+        doc.setFont("helvetica", "normal");
+        const splitTitle = doc.splitTextToSize(voucherData.titulo_libro, 40);
+        if (splitTitle.length > 1) {
+            splitTitle.forEach((line, index) => {
+                doc.text(line, 30, y);
+                if (index < splitTitle.length - 1) y += 5;
+            });
+        } else {
+            doc.text(voucherData.titulo_libro, 30, y);
+        }
+        
+        y += 8;
+        doc.setFont("helvetica", "bold");
+        doc.text("ISBN:", 10, y);
+        doc.setFont("helvetica", "normal");
+        doc.text(voucherData.isbn_libro || '-', 30, y);
+        
+        y += 6;
+        doc.setFont("helvetica", "bold");
+        doc.text("PRÉSTAMO:", 10, y);
+        doc.setFont("helvetica", "normal");
+        doc.text(voucherData.fecha_prestamo, 30, y);
+        
+        y += 6;
+        doc.setFont("helvetica", "bold");
+        doc.text("VENCE EL:", 10, y);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(220, 53, 69); // Rojo para alertar fecha de devolución
+        doc.text(voucherData.fecha_devolucion, 30, y);
+        
+        // Restaurar color
+        doc.setTextColor(33, 37, 41);
+        
+        // Pie de página
+        y += 10;
+        doc.setDrawColor(200, 200, 200);
+        doc.line(10, y, 70, y);
+        
+        y += 6;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7.5);
+        doc.text("Por favor, devuelva el libro en el plazo establecido.", 40, y, { align: "center" });
+        y += 4;
+        doc.text("Evite multas de $500 por cada día de atraso.", 40, y, { align: "center" });
+        y += 6;
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(40, 167, 69); // Verde para el agradecimiento
+        doc.text("¡Gracias por su preferencia!", 40, y, { align: "center" });
+        
+        doc.save(`Voucher_Prestamo_${voucherData.id_prestamo}.pdf`);
+    });
 }
